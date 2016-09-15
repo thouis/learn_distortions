@@ -11,14 +11,14 @@ import glob
 import os.path
 import imread
 import cv2
+import h5py
 
 def load_images(image_dir):
     filenames = sorted(glob.glob(os.path.join(image_dir, '*.tif')))
     for f in filenames:
-        print(f)
         imread.imread(f)
     ims = [imread.imread(f) for f in filenames]
-    print("read images", len(ims))
+    print("read images", len(ims), "from", image_dir)
     return ims
 
 def smooth_1channel_warp(shp, spacing):
@@ -100,11 +100,26 @@ def find_offset_vectors(boundaries):
     assert np.allclose(dists, np.sqrt(offsets_i ** 2 + offsets_j ** 2))
     return np.stack([offsets_i, offsets_j])
 
+
 def gen_icp(image_dir, label_dir, subimage_size, batch_size=16):
-    ims = load_images(image_dir)
-    labels = load_images(label_dir)
+    ims = load_images(image_dir)[:5]
+    labels = load_images(label_dir)[:5]
+    print("LAB", len(labels))
     zeros = [find_boundaries(l) for l in labels]
     offsets_to_zero = [find_offset_vectors(l) for l in zeros]
+
+    for z, off in zip(zeros, offsets_to_zero[1:]):
+        deltas = off[:, z > 0]
+        mag = np.sqrt((deltas**2).sum(axis=0))
+        print(np.mean(mag))
+
+    f = h5py.File('debug.hdf5', 'w')
+    f.create_dataset('im', data=ims[0])
+    f.create_dataset('lab', data=labels[0])
+    f.create_dataset('zero', data=zeros[0])
+    f.create_dataset('offset', data=offsets_to_zero[0])
+    f.close()
+    del f
 
     imshape = ims[0].shape
 
@@ -122,8 +137,8 @@ def gen_icp(image_dir, label_dir, subimage_size, batch_size=16):
             cutout_j = slice(base_j, base_j + subimage_size[1])
 
             # extract subimages
-            im1 = ims[idx1][cutout_i, cutout_j]
-            im2 = ims[idx2][cutout_i, cutout_j]
+            im1 = ims[idx1][cutout_i, cutout_j].astype(np.float32) / 255
+            im2 = ims[idx2][cutout_i, cutout_j].astype(np.float32) / 255
             zeros1 = zeros[idx1][cutout_i, cutout_j]
             offsets2 = offsets_to_zero[idx2][:, cutout_i, cutout_j]  # 2 channels vector
 
@@ -134,7 +149,7 @@ def gen_icp(image_dir, label_dir, subimage_size, batch_size=16):
             if np.random.randint(2) == 0:
                 allims = [im[..., ::-1] for im in allims]
             if np.random.randint(2) == 0:
-                allims = [(im.T if len(im.shape) == 2 else im.transpose([1, 2]))
+                allims = [(im.T if len(im.shape) == 2 else im.transpose([0, 2, 1]))
                           for im in allims]
             yield allims
 
@@ -143,7 +158,7 @@ def gen_icp(image_dir, label_dir, subimage_size, batch_size=16):
         examples = [next(subimage_generator) for _ in range(batch_size)]
         batchim1, batchim2, batchzeros, batchoffsets = [np.stack(l) for l in zip(*examples)]
         inputs = np.stack([batchim1, batchim2], axis=1)
-        outputs = np.concatenate((batchoffsets, batchzeros[:, np.newaxis, ...]), axis=1)
+        outputs = np.concatenate((batchoffsets, batchzeros[:, np.newaxis, ...].astype(batchoffsets.dtype)), axis=1)
         assert inputs.shape == (batch_size, 2) + subimage_size
-        assert outputs.shape == (batch_size, 2) + subimage_size
+        assert outputs.shape == (batch_size, 3) + subimage_size
         yield inputs, outputs
