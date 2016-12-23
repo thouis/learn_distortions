@@ -1,5 +1,5 @@
 import matplotlib
-matplotlib.use('WXAgg')
+# matplotlib.use('WXAgg')
 import pylab
 
 import numpy as np
@@ -12,7 +12,6 @@ import cv2
 def load_images(image_dir):
     filenames = sorted(glob.glob(os.path.join(image_dir, '*.tif')))
     for f in filenames:
-        print(f)
         imread.imread(f)
     ims = [imread.imread(f) for f in filenames]
     print("read images", len(ims))
@@ -52,6 +51,10 @@ def random_distortion(ims, image_size, max_distortion=5, spacing=50):
     subim1 = ims[idx][base_i:, base_j:][:padded[0], :padded[1]]
     subim2 = ims[idx + 1][base_i:, base_j:][:padded[0], :padded[1]]
 
+    # randomly swap which is the first image
+    if np.random.randint(2) == 0:
+        subim1, subim2 = subim2, subim1
+
     # random flips, tranposes
     if np.random.randint(2) == 0:
         subim1 = subim1[::-1, :]
@@ -70,14 +73,22 @@ def random_distortion(ims, image_size, max_distortion=5, spacing=50):
     sample_j = orig_j + distortion[1, ...]
     distorted = cv2.remap(subim2, sample_j.astype(np.float32), sample_i.astype(np.float32), cv2.INTER_LINEAR)
 
-    inputs = np.stack([subim1, distorted])[:, :image_size[0], :image_size[1]].astype(np.float32) / 255
-    outputs = distortion[:, :image_size[0], :image_size[1]]
+    center_cutout = ((padded[0] - image_size[0]) // 2,
+                     (padded[1] - image_size[1]) // 2)
+
+    inputs = np.stack([subim1, distorted])
+    inputs = inputs[:, center_cutout[0]:, center_cutout[1]:]
+    inputs = inputs[:, :image_size[0], :image_size[1]]
+    inputs = inputs.astype(np.float32) / 255
+
+    outputs = distortion[:, center_cutout[0]:, center_cutout[1]:]
+    outputs = outputs[:, :image_size[0], :image_size[1]]
 
     return inputs, outputs
 
-def gen_distorted(image_dir, image_size, batch_size=16):
+def gen_distorted(image_dir, image_size, batch_size=16, **kwargs):
     ims = load_images(image_dir)
     while True:
-        examples = [random_distortion(ims, image_size[1:]) for _ in range(batch_size)]
+        examples = [random_distortion(ims, image_size[1:], **kwargs) for _ in range(batch_size)]
         distorted_ims, distortions = zip(*examples)
         yield np.stack(distorted_ims), np.stack(distortions)
